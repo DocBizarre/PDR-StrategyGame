@@ -843,6 +843,447 @@ class TrainTab(tk.Frame):
 
 
 # ═════════════════════════════════════════════════════════════════════════════
+# ONGLET 4 — DEBUG (heatmap des scores + bot vs bot pas à pas)
+# ═════════════════════════════════════════════════════════════════════════════
+
+def _lerp_color(t: float, lo=(219,234,254), hi=(185,28,28)) -> str:
+    """Interpole entre bleu clair (lo, t=0) et rouge (hi, t=1)."""
+    r = int(lo[0] + (hi[0]-lo[0]) * t)
+    g = int(lo[1] + (hi[1]-lo[1]) * t)
+    b = int(lo[2] + (hi[2]-lo[2]) * t)
+    return f"#{r:02x}{g:02x}{b:02x}"
+
+
+class DebugTab(tk.Frame):
+    """
+    Onglet Debug — deux sous-modes :
+      • Heatmap  : une position quelconque, affiche le score du bot pour chaque coup légal
+      • Bot vs Bot pas à pas : avance coup par coup, affiche les scores à chaque tour
+    """
+
+    def __init__(self, parent):
+        super().__init__(parent, bg=C_BG)
+        self._state      = None
+        self._legal_set  = set()
+        self._scores     = {}      # move → float
+        self._agent      = None
+        self._agent2     = None    # bot B (mode bot vs bot)
+        self._mode       = "heatmap"
+        self._auto_play  = False
+        self._q          = queue.Queue()
+        self._history    = []      # liste de (state, scores_dict, move_joué)
+
+        self._build()
+        self._poll()
+        self._new_game()
+
+    # ── Construction ──────────────────────────────────────────────────────
+
+    def _build(self):
+        f_s = tkfont.Font(family="Segoe UI", size=9)
+        f_h = tkfont.Font(family="Segoe UI", size=11, weight="bold")
+        f_c = tkfont.Font(family="Consolas", size=8)
+
+        # ── Mode ──────────────────────────────────────────────────────────
+        top = tk.Frame(self, bg=C_BG); top.pack(fill=tk.X, padx=12, pady=(10,4))
+        self._mode_var = tk.StringVar(value="heatmap")
+        tk.Radiobutton(top, text="Heatmap (1 bot)", variable=self._mode_var,
+                       value="heatmap", bg=C_BG, font=f_s,
+                       command=self._on_mode).pack(side=tk.LEFT)
+        tk.Radiobutton(top, text="Bot vs Bot pas à pas", variable=self._mode_var,
+                       value="botvsbot", bg=C_BG, font=f_s,
+                       command=self._on_mode).pack(side=tk.LEFT, padx=(12,0))
+
+        # ── Config Bot A ───────────────────────────────────────────────────
+        self._grp_a = tk.LabelFrame(self, text="Bot A", bg=C_BG, fg=C_TEXT,
+                                     font=f_s, padx=8, pady=4)
+        self._grp_a.pack(fill=tk.X, padx=12, pady=(4,0))
+        self._a_type = tk.StringVar(value="AlphaBeta")
+        for v in ("AlphaBeta", "MCTS", "Random"):
+            tk.Radiobutton(self._grp_a, text=v, variable=self._a_type,
+                           value=v, bg=C_BG, font=f_s).pack(side=tk.LEFT, padx=3)
+        tk.Label(self._grp_a, text="  Ckpt :", bg=C_BG, font=f_s).pack(side=tk.LEFT)
+        self._a_ckpt = tk.StringVar(value="models/best_uttt_model.pth")
+        tk.Entry(self._grp_a, textvariable=self._a_ckpt, width=28, font=f_s).pack(side=tk.LEFT, padx=2)
+        tk.Button(self._grp_a, text="…", font=f_s, bg=C_BTN, fg="white",
+                  relief=tk.FLAT, padx=4,
+                  command=lambda: self._browse(self._a_ckpt)).pack(side=tk.LEFT)
+        tk.Label(self._grp_a, text="  Force :", bg=C_BG, font=f_s).pack(side=tk.LEFT)
+        self._a_str = tk.Spinbox(self._grp_a, from_=1, to=500, width=5, font=f_s)
+        self._a_str.delete(0,tk.END); self._a_str.insert(0,"3")
+        self._a_str.pack(side=tk.LEFT, padx=4)
+
+        # ── Config Bot B (mode botvsbot seulement) ─────────────────────────
+        self._grp_b = tk.LabelFrame(self, text="Bot B", bg=C_BG, fg=C_TEXT,
+                                     font=f_s, padx=8, pady=4)
+        self._grp_b.pack(fill=tk.X, padx=12, pady=(2,0))
+        self._b_type = tk.StringVar(value="MCTS")
+        for v in ("AlphaBeta", "MCTS", "Random"):
+            tk.Radiobutton(self._grp_b, text=v, variable=self._b_type,
+                           value=v, bg=C_BG, font=f_s).pack(side=tk.LEFT, padx=3)
+        tk.Label(self._grp_b, text="  Ckpt :", bg=C_BG, font=f_s).pack(side=tk.LEFT)
+        self._b_ckpt = tk.StringVar(value="models/alphazero/best.pth")
+        tk.Entry(self._grp_b, textvariable=self._b_ckpt, width=28, font=f_s).pack(side=tk.LEFT, padx=2)
+        tk.Button(self._grp_b, text="…", font=f_s, bg=C_BTN, fg="white",
+                  relief=tk.FLAT, padx=4,
+                  command=lambda: self._browse(self._b_ckpt)).pack(side=tk.LEFT)
+        tk.Label(self._grp_b, text="  Force :", bg=C_BG, font=f_s).pack(side=tk.LEFT)
+        self._b_str = tk.Spinbox(self._grp_b, from_=1, to=500, width=5, font=f_s)
+        self._b_str.delete(0,tk.END); self._b_str.insert(0,"100")
+        self._b_str.pack(side=tk.LEFT, padx=4)
+
+        # ── Contrôles ──────────────────────────────────────────────────────
+        ctrl = tk.Frame(self, bg=C_BG); ctrl.pack(fill=tk.X, padx=12, pady=6)
+        tk.Button(ctrl, text="⟳  Nouvelle partie", font=f_s,
+                  bg=C_BTN, fg="white", relief=tk.FLAT, padx=10, pady=4,
+                  command=self._new_game).pack(side=tk.LEFT)
+        tk.Button(ctrl, text="◀  Précédent", font=f_s,
+                  bg=C_BTN, fg="white", relief=tk.FLAT, padx=10, pady=4,
+                  command=self._prev_move).pack(side=tk.LEFT, padx=6)
+        self._btn_next = tk.Button(ctrl, text="Calculer ▶", font=f_s,
+                                   bg=C_BTN_GREEN, fg="white", relief=tk.FLAT,
+                                   padx=10, pady=4, command=self._next_move)
+        self._btn_next.pack(side=tk.LEFT)
+        self._btn_auto = tk.Button(ctrl, text="▶▶  Auto", font=f_s,
+                                   bg="#1D4ED8", fg="white", relief=tk.FLAT,
+                                   padx=10, pady=4, command=self._toggle_auto)
+        self._btn_auto.pack(side=tk.LEFT, padx=6)
+        self._lbl_turn = tk.Label(ctrl, text="", font=f_h, bg=C_BG, fg=C_TEXT)
+        self._lbl_turn.pack(side=tk.LEFT, padx=12)
+
+        # ── Légende heatmap ────────────────────────────────────────────────
+        leg = tk.Frame(self, bg=C_BG); leg.pack(fill=tk.X, padx=12)
+        tk.Label(leg, text="Score :", bg=C_BG, fg=C_MUTED, font=f_s).pack(side=tk.LEFT)
+        for t, lbl in [(0.0,"−1.0 (perdant)"), (0.25,"−0.5"), (0.5,"0.0"),
+                       (0.75,"+0.5"), (1.0,"+1.0 (gagnant)")]:
+            col = _lerp_color(t)
+            tk.Canvas(leg, width=14, height=14, bg=col,
+                      highlightthickness=1, highlightbackground=C_SEP_THICK).pack(side=tk.LEFT, padx=(6,1))
+            tk.Label(leg, text=lbl, font=f_s, bg=C_BG, fg=C_MUTED).pack(side=tk.LEFT, padx=(0,4))
+
+        # ── Plateau + panneau latéral ──────────────────────────────────────
+        body = tk.Frame(self, bg=C_BG); body.pack(fill=tk.BOTH, expand=True, padx=12, pady=4)
+
+        self._board = BoardCanvas(body, on_click_move=None)
+        self._board.pack(side=tk.LEFT)
+
+        # Panneau droit : top 10 coups
+        right = tk.Frame(body, bg=C_BG); right.pack(side=tk.LEFT, fill=tk.BOTH,
+                                                      expand=True, padx=(12,0))
+        tk.Label(right, text="Top coups", font=f_h, bg=C_BG, fg=C_TEXT).pack(anchor="w")
+        self._moves_text = tk.Text(right, width=28, font=f_c,
+                                   bg="#1F2937", fg="#D1D5DB", relief=tk.FLAT,
+                                   state=tk.DISABLED)
+        self._moves_text.pack(fill=tk.BOTH, expand=True)
+
+        tk.Label(right, text="Log coups joués", font=f_h, bg=C_BG,
+                 fg=C_TEXT).pack(anchor="w", pady=(8,0))
+        self._log = tk.Text(right, width=28, font=f_c,
+                            bg="#1F2937", fg="#9CA3AF", relief=tk.FLAT,
+                            state=tk.DISABLED)
+        self._log.pack(fill=tk.BOTH, expand=True)
+
+        self._on_mode()
+
+    # ── Helpers ───────────────────────────────────────────────────────────
+
+    def _browse(self, var):
+        p = filedialog.askopenfilename(filetypes=[("PyTorch","*.pth"),("All","*.*")])
+        if p: var.set(p)
+
+    def _on_mode(self):
+        self._mode = self._mode_var.get()
+        state = tk.NORMAL if self._mode == "botvsbot" else tk.DISABLED
+        for w in self._grp_b.winfo_children():
+            try: w.config(state=state)
+            except: pass
+        self._new_game()
+
+    def _make_agent(self, type_var, ckpt_var, str_var):
+        t    = type_var.get()
+        ckpt = ckpt_var.get()
+        try: val = int(str_var.get())
+        except ValueError: val = 3
+        if t == "Random":
+            from bot_random import RandomAgent
+            return RandomAgent()
+        elif t == "AlphaBeta":
+            from model         import NeuralEvaluator
+            from bot_alphabeta import AlphaBetaAgent
+            ev = NeuralEvaluator(ckpt)
+            return AlphaBetaAgent(ev, depth=val)
+        else:
+            from bot_mcts import LightEvaluator, MCTSAgent
+            ev = LightEvaluator(ckpt if os.path.exists(ckpt) else None)
+            return MCTSAgent(ev, simulations=val)
+
+    def _log_line(self, text, widget=None):
+        w = widget or self._log
+        w.config(state=tk.NORMAL)
+        w.insert(tk.END, text + "\n")
+        w.see(tk.END)
+        w.config(state=tk.DISABLED)
+
+    def _score_to_t(self, score: float) -> float:
+        """Normalise un score [-1, 1] → [0, 1] pour la heatmap."""
+        return max(0.0, min(1.0, (score + 1.0) / 2.0))
+
+    # ── Heatmap sur le plateau ────────────────────────────────────────────
+
+    def _redraw_debug(self):
+        """Redessine le plateau avec la heatmap des scores superposée."""
+        if self._state is None: return
+
+        # Dessin de base
+        self._board.update_state(self._state, set(), interactive=False)
+
+        scores  = self._scores
+        legal   = list(self._legal_set)
+        if not scores or not legal: return
+
+        vals = list(scores.values())
+        mn, mx = min(vals), max(vals)
+        span   = mx - mn if mx > mn else 1.0
+
+        SYMS = {1: "X", 2: "O"}
+
+        for move in legal:
+            if move not in scores: continue
+            raw   = scores[move]
+            t     = (raw - mn) / span          # relatif dans la plage observée
+            color = _lerp_color(t)
+            x1, y1, x2, y2 = _cell_rect(move)
+
+            # Fond coloré semi-transparent simulé
+            self._board.create_rectangle(x1+1, y1+1, x2-1, y2-1,
+                                          fill=color, outline="", stipple="gray50")
+            self._board.create_rectangle(x1+1, y1+1, x2-1, y2-1,
+                                          fill=color, outline="")
+
+            # Score affiché
+            lbl = f"{raw:+.2f}"
+            self._board.create_text((x1+x2)//2, (y1+y2)//2,
+                                     text=lbl,
+                                     font=tkfont.Font(family="Segoe UI", size=7, weight="bold"),
+                                     fill="#111827")
+
+        # Re-dessiner les pièces par-dessus
+        fp = tkfont.Font(family="Segoe UI", size=16, weight="bold")
+        for i in range(81):
+            p = self._state.board[i]
+            if p:
+                x1,y1,x2,y2 = _cell_rect(i)
+                self._board.create_text((x1+x2)//2, (y1+y2)//2,
+                                         text=SYMS[p], font=fp,
+                                         fill=C_P1 if p==1 else C_P2)
+
+    def _update_moves_panel(self):
+        """Affiche le top 10 coups triés par score dans le panneau droit."""
+        self._moves_text.config(state=tk.NORMAL)
+        self._moves_text.delete("1.0", tk.END)
+
+        if not self._scores:
+            self._moves_text.config(state=tk.DISABLED)
+            return
+
+        sorted_moves = sorted(self._scores.items(), key=lambda x: x[1], reverse=True)
+        player = self._state.player if self._state else 1
+        who    = "J1 (X)" if player == 1 else "J2 (O)"
+        self._moves_text.insert(tk.END, f"Tour {who}\n{'─'*26}\n")
+        self._moves_text.insert(tk.END, f"  {'Coup':>4}  {'SG':>3}  {'Cell':>4}  {'Score':>7}\n")
+        self._moves_text.insert(tk.END, f"{'─'*26}\n")
+
+        for rank, (move, score) in enumerate(sorted_moves[:15], 1):
+            sg   = move // 9
+            cell = move % 9
+            bar  = "█" * int(abs(score) * 8)
+            sign = "+" if score >= 0 else ""
+            line = f"  {rank:2d}.  {move:2d}   SG{sg}  c{cell}  {sign}{score:.3f} {bar}\n"
+            self._moves_text.insert(tk.END, line)
+
+        self._moves_text.config(state=tk.DISABLED)
+
+    # ── Logique de jeu ────────────────────────────────────────────────────
+
+    def _new_game(self):
+        from game import UTTTState
+        self._auto_play = False
+        self._btn_auto.config(text="▶▶  Auto", bg="#1D4ED8")
+        self._history.clear()
+        self._scores.clear()
+        self._state     = UTTTState.initial()
+        self._legal_set = set(self._state.legal_moves())
+        self._board.update_state(self._state, self._legal_set, interactive=False)
+        self._lbl_turn.config(text="Tour 0 — appuie sur Calculer", fg=C_MUTED)
+
+        self._moves_text.config(state=tk.NORMAL); self._moves_text.delete("1.0",tk.END)
+        self._moves_text.config(state=tk.DISABLED)
+        self._log.config(state=tk.NORMAL); self._log.delete("1.0",tk.END)
+        self._log.config(state=tk.DISABLED)
+
+        # Charger les agents en background
+        def load():
+            try:
+                ag_a = self._make_agent(self._a_type, self._a_ckpt, self._a_str)
+                ag_b = self._make_agent(self._b_type, self._b_ckpt, self._b_str) \
+                       if self._mode == "botvsbot" else None
+                self._q.put(("agents", ag_a, ag_b))
+            except Exception as e:
+                self._q.put(("error", str(e)))
+        threading.Thread(target=load, daemon=True).start()
+
+    def _current_agent(self):
+        """Retourne l'agent qui doit jouer dans l'état courant."""
+        if self._mode == "heatmap" or self._agent2 is None:
+            return self._agent
+        return self._agent if self._state.player == 1 else self._agent2
+
+    def _next_move(self):
+        """Calcule les scores du bot courant et joue le meilleur coup."""
+        if self._state is None or self._state.is_terminal: return
+        if self._agent is None: return
+
+        ag = self._current_agent()
+        state = self._state
+        self._lbl_turn.config(text="Calcul en cours…", fg=C_THINKING)
+        self._btn_next.config(state=tk.DISABLED)
+
+        def compute():
+            try:
+                scores = {}
+                legal  = state.legal_moves()
+
+                # Récupère les scores pour chaque coup légal
+                if hasattr(ag, 'engine'):
+                    # MCTSAgent → on utilise search_with_policy pour avoir la distribution
+                    import numpy as np
+                    move, pi = ag.engine.search_with_policy(state, temperature=0.5)
+                    for m in legal:
+                        scores[m] = float(pi[m])
+                    best_move = move
+                    best_score = float(pi[move])
+                elif hasattr(ag, 'evaluator'):
+                    # AlphaBetaAgent → on évalue chaque coup à depth=1
+                    from search import best_move as ab_best
+                    best_move, best_score = ab_best(state, ag.evaluator,
+                                                     depth=ag.depth, top_k=ag.top_k,
+                                                     verbose=False)
+                    # Score pour chaque coup légal à depth=1
+                    for m in legal:
+                        child = state.apply_move(m)
+                        v = ag.evaluator.evaluate(child)
+                        # Depuis perspective du joueur courant
+                        scores[m] = -v if child.player != state.player else v
+                else:
+                    # RandomAgent → tous les coups équivalents
+                    import random
+                    best_move = random.choice(legal)
+                    best_score = 0.0
+                    for m in legal:
+                        scores[m] = 0.0
+
+                self._q.put(("scores", state, scores, best_move, best_score, ag.name))
+            except Exception as e:
+                self._q.put(("error", str(e)))
+
+        threading.Thread(target=compute, daemon=True).start()
+
+    def _prev_move(self):
+        """Revient à l'état précédent."""
+        if not self._history: return
+        self._state, self._scores = self._history.pop()
+        self._legal_set = set(self._state.legal_moves())
+        self._redraw_debug()
+        self._update_moves_panel()
+        turn = len(self._history)
+        self._lbl_turn.config(text=f"Tour {turn} — retour arrière", fg=C_MUTED)
+
+    def _toggle_auto(self):
+        self._auto_play = not self._auto_play
+        if self._auto_play:
+            self._btn_auto.config(text="⏸  Pause", bg=C_BTN_RED)
+            self._schedule_auto()
+        else:
+            self._btn_auto.config(text="▶▶  Auto", bg="#1D4ED8")
+
+    def _schedule_auto(self):
+        if self._auto_play and not (self._state and self._state.is_terminal):
+            self._next_move()
+
+    # ── Polling ───────────────────────────────────────────────────────────
+
+    def _poll(self):
+        try:
+            while True:
+                msg = self._q.get_nowait()
+
+                if msg[0] == "agents":
+                    _, ag_a, ag_b = msg
+                    self._agent  = ag_a
+                    self._agent2 = ag_b
+                    self._lbl_turn.config(
+                        text=f"Prêt — A:{ag_a.name}" +
+                             (f"  B:{ag_b.name}" if ag_b else ""),
+                        fg=C_TEXT
+                    )
+
+                elif msg[0] == "scores":
+                    _, state, scores, best_move, best_score, ag_name = msg
+
+                    # Sauvegarder l'état avant de jouer
+                    self._history.append((self._state, dict(self._scores)))
+                    self._scores    = scores
+                    self._legal_set = set(state.legal_moves())
+
+                    # Afficher la heatmap
+                    self._redraw_debug()
+                    self._update_moves_panel()
+
+                    # Jouer le coup
+                    new_state = state.apply_move(best_move)
+                    sg, cell  = best_move // 9, best_move % 9
+                    turn      = len(self._history)
+                    player    = state.player
+                    SYMS      = {1:"X", 2:"O"}
+
+                    self._log_line(
+                        f"Tour {turn:2d} | {ag_name[:12]:12s} | "
+                        f"J{player}({SYMS[player]}) → SG{sg} c{cell} "
+                        f"score={best_score:+.3f}"
+                    )
+
+                    self._state     = new_state
+                    self._legal_set = set(new_state.legal_moves())
+                    self._btn_next.config(state=tk.NORMAL)
+
+                    if new_state.is_terminal:
+                        w = new_state.winner
+                        msg_end = "Nul !" if w == 0 else f"J{w} ({SYMS[w]}) gagne !"
+                        self._lbl_turn.config(text=f"Tour {turn} — {msg_end}", fg=C_P1 if w==1 else C_P2 if w==2 else C_MUTED)
+                        self._auto_play = False
+                        self._btn_auto.config(text="▶▶  Auto", bg="#1D4ED8")
+                        self._log_line(f"{'─'*30}\n  {msg_end}")
+                    else:
+                        next_ag = self._current_agent()
+                        nxt     = next_ag.name if next_ag else "?"
+                        self._lbl_turn.config(
+                            text=f"Tour {turn} — prochain : {nxt}  (score joué : {best_score:+.3f})",
+                            fg=C_P1 if new_state.player==1 else C_P2
+                        )
+                        if self._auto_play:
+                            self.after(400, self._schedule_auto)
+
+                elif msg[0] == "error":
+                    messagebox.showerror("Erreur", msg[1])
+                    self._auto_play = False
+                    self._btn_next.config(state=tk.NORMAL)
+
+        except queue.Empty:
+            pass
+        self.after(60, self._poll)
+
+
+# ═════════════════════════════════════════════════════════════════════════════
 # FENÊTRE PRINCIPALE
 # ═════════════════════════════════════════════════════════════════════════════
 
@@ -868,6 +1309,7 @@ class App(tk.Tk):
         nb.add(PlayTab(nb),  text="🎮  Jouer")
         nb.add(MatchTab(nb), text="⚔   Match")
         nb.add(TrainTab(nb), text="📈  Entraînement")
+        nb.add(DebugTab(nb), text="🔬  Debug")
 
 
 if __name__ == "__main__":
