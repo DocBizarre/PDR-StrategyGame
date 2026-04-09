@@ -167,6 +167,7 @@ class ServerEvaluator:
         self._out_q    = server.register_worker(worker_id)
         self._req_id   = 0
         self._cache: dict = {}
+        self.device    = server.device   # requis par MCTSEngine
 
     def clear_cache(self):
         self._cache.clear()
@@ -222,6 +223,16 @@ def _play_game_via_server(
     from bot_mcts import MCTSEngine
 
     engine   = MCTSEngine(evaluator, simulations=simulations, c_puct=c_puct, batch_size=1)
+
+    # Surcharge de _batch_forward : au lieu d'appeler ev.model directement,
+    # on envoie chaque état au serveur via ServerEvaluator._query()
+    def _server_batch_forward(states):
+        import numpy as np
+        results = [evaluator._query(s) for s in states]
+        values  = np.array([r[0] for r in results], dtype=np.float32)
+        lps     = np.stack([r[1] for r in results])
+        return values, lps
+    engine._batch_forward = _server_batch_forward
     state    = UTTTState.initial()
     examples = []
     move_num = 0
