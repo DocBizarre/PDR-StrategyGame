@@ -909,9 +909,15 @@ class DebugTab(tk.Frame):
                   relief=tk.FLAT, padx=4,
                   command=lambda: self._browse(self._a_ckpt)).pack(side=tk.LEFT)
         tk.Label(self._grp_a, text="  Force :", bg=C_BG, font=f_s).pack(side=tk.LEFT)
-        self._a_str = tk.Spinbox(self._grp_a, from_=1, to=500, width=5, font=f_s)
+        self._a_str = tk.Spinbox(self._grp_a, from_=1, to=500, width=5, font=f_s,
+                                  command=self._schedule_reload)
         self._a_str.delete(0,tk.END); self._a_str.insert(0,"3")
         self._a_str.pack(side=tk.LEFT, padx=4)
+        self._a_str.bind("<FocusOut>", lambda e: self._schedule_reload())
+        self._a_str.bind("<Return>",   lambda e: self._schedule_reload())
+        tk.Button(self._grp_a, text="↺ Appliquer", font=f_s,
+                  bg="#1D4ED8", fg="white", relief=tk.FLAT, padx=6,
+                  command=self._reload_agents).pack(side=tk.LEFT, padx=(4,0))
 
         # ── Config Bot B (mode botvsbot seulement) ─────────────────────────
         self._grp_b = tk.LabelFrame(self, text="Bot B", bg=C_BG, fg=C_TEXT,
@@ -928,9 +934,15 @@ class DebugTab(tk.Frame):
                   relief=tk.FLAT, padx=4,
                   command=lambda: self._browse(self._b_ckpt)).pack(side=tk.LEFT)
         tk.Label(self._grp_b, text="  Force :", bg=C_BG, font=f_s).pack(side=tk.LEFT)
-        self._b_str = tk.Spinbox(self._grp_b, from_=1, to=500, width=5, font=f_s)
+        self._b_str = tk.Spinbox(self._grp_b, from_=1, to=500, width=5, font=f_s,
+                                  command=self._schedule_reload)
         self._b_str.delete(0,tk.END); self._b_str.insert(0,"100")
         self._b_str.pack(side=tk.LEFT, padx=4)
+        self._b_str.bind("<FocusOut>", lambda e: self._schedule_reload())
+        self._b_str.bind("<Return>",   lambda e: self._schedule_reload())
+        tk.Button(self._grp_b, text="↺ Appliquer", font=f_s,
+                  bg="#1D4ED8", fg="white", relief=tk.FLAT, padx=6,
+                  command=self._reload_agents).pack(side=tk.LEFT, padx=(4,0))
 
         # ── Contrôles ──────────────────────────────────────────────────────
         ctrl = tk.Frame(self, bg=C_BG); ctrl.pack(fill=tk.X, padx=12, pady=6)
@@ -998,6 +1010,29 @@ class DebugTab(tk.Frame):
             try: w.config(state=state)
             except: pass
         self._new_game()
+
+    def _schedule_reload(self):
+        """Debounce : recharge l'agent 600ms après le dernier changement de spinbox."""
+        if hasattr(self, "_reload_after_id"):
+            self.after_cancel(self._reload_after_id)
+        self._reload_after_id = self.after(600, self._reload_agents)
+
+    def _reload_agents(self):
+        """Recharge les agents sans réinitialiser la partie — les scores se recalculent au prochain coup."""
+        self._agent  = None
+        self._agent2 = None
+        self._lbl_turn.config(text="Rechargement…", fg=C_THINKING)
+        self._btn_next.config(state=tk.DISABLED)
+
+        def load():
+            try:
+                ag_a = self._make_agent(self._a_type, self._a_ckpt, self._a_str)
+                ag_b = self._make_agent(self._b_type, self._b_ckpt, self._b_str) \
+                       if self._mode == "botvsbot" else None
+                self._q.put(("agents", ag_a, ag_b))
+            except Exception as e:
+                self._q.put(("error", str(e)))
+        threading.Thread(target=load, daemon=True).start()
 
     def _make_agent(self, type_var, ckpt_var, str_var):
         t    = type_var.get()
@@ -1153,31 +1188,42 @@ class DebugTab(tk.Frame):
                 scores = {}
                 legal  = state.legal_moves()
 
-                # Récupère les scores pour chaque coup légal
                 if hasattr(ag, 'engine'):
-                    # MCTSAgent → on utilise search_with_policy pour avoir la distribution
+                    # MCTSAgent — distribution de visites via search_with_policy
                     import numpy as np
                     move, pi = ag.engine.search_with_policy(state, temperature=0.5)
                     for m in legal:
                         scores[m] = float(pi[m])
-                    best_move = move
+                    best_move  = move
                     best_score = float(pi[move])
+
                 elif hasattr(ag, 'evaluator'):
-                    # AlphaBetaAgent → on évalue chaque coup à depth=1
+                    # AlphaBetaAgent — scores à la vraie profondeur de l'agent
                     from search import best_move as ab_best
-                    best_move, best_score = ab_best(state, ag.evaluator,
-                                                     depth=ag.depth, top_k=ag.top_k,
-                                                     verbose=False)
-                    # Score pour chaque coup légal à depth=1
+                    # Meilleur coup à ag.depth
+                    best_move, best_score = ab_best(
+                        state, ag.evaluator,
+                        depth=ag.depth, top_k=ag.top_k, verbose=False,
+                    )
+                    # Score de chaque coup légal à depth-1
+                    # (valeur du nœud fils, inversée → perspective du joueur courant)
+                    depth_sub = max(1, ag.depth - 1)
                     for m in legal:
                         child = state.apply_move(m)
-                        v = ag.evaluator.evaluate(child)
-                        # Depuis perspective du joueur courant
-                        scores[m] = -v if child.player != state.player else v
+                        if child.is_terminal:
+                            w = child.winner
+                            scores[m] = 0.0 if w == 0 else (1.0 if w == state.player else -1.0)
+                        else:
+                            _, v = ab_best(
+                                child, ag.evaluator,
+                                depth=depth_sub, top_k=ag.top_k, verbose=False,
+                            )
+                            scores[m] = -v   # inverser : v est du point de vue de l'adversaire
+
                 else:
-                    # RandomAgent → tous les coups équivalents
+                    # RandomAgent — tous les coups équivalents
                     import random
-                    best_move = random.choice(legal)
+                    best_move  = random.choice(legal)
                     best_score = 0.0
                     for m in legal:
                         scores[m] = 0.0
@@ -1221,6 +1267,7 @@ class DebugTab(tk.Frame):
                     _, ag_a, ag_b = msg
                     self._agent  = ag_a
                     self._agent2 = ag_b
+                    self._btn_next.config(state=tk.NORMAL)
                     self._lbl_turn.config(
                         text=f"Prêt — A:{ag_a.name}" +
                              (f"  B:{ag_b.name}" if ag_b else ""),
