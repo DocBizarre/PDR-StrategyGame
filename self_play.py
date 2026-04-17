@@ -175,7 +175,7 @@ def run_alphazero(
     trainer = Trainer(current, buffer, lr=lr, weight_decay=weight_decay,
                       total_steps=iterations * train_steps)
 
-    engine  = MCTSEngine(current, simulations=simulations)
+    engine  = MCTSEngine(current, simulations=simulations, batch_size=8)
 
     print(f"\n{'═'*60}")
     print(f"  AlphaZero UTTT")

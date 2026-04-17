@@ -1,0 +1,112 @@
+{
+  "titre": "Rapport IA UTTT — AlphaBeta(d=3)",
+  "blocs": [
+    {
+      "titre": "Duel : AlphaBeta(d=3) vs Random",
+      "metriques": {
+        "Parties jouées": 30,
+        "Win rate AlphaBeta(d=3) (%)": 73.3,
+        "Draw rate (%)": 23.3,
+        "Loss rate AlphaBeta(d=3) (%)": 3.3,
+        "Win rate en J1 (%)": 73.3,
+        "Win rate en J2 (%)": 0.0,
+        "Elo différentiel estimé": 176.0,
+        "Temps / coup AlphaBeta(d=3) (ms)": 5.9,
+        "Temps / coup Random (ms)": 0.0,
+        "Score moyen retourné AlphaBeta(d=3)": 0.653
+      },
+      "conclusions": [
+        "AlphaBeta(d=3) est meilleur (+176 Elo estimé).",
+        "AlphaBeta(d=3) est 1294× plus rapide que Random."
+      ],
+      "verdict": "excellent"
+    },
+    {
+      "titre": "Statistiques des parties (30 parties, agent=AlphaBeta(d=3))",
+      "metriques": {
+        "Parties jouées": 30,
+        "Win rate (%)": 63.3,
+        "Draw rate (%)": 20.0,
+        "Loss rate (%)": 16.7,
+        "Win rate jouant J1 (%)": 63.3,
+        "Win rate jouant J2 (%)": 0.0,
+        "Avantage J1 (points)": 63.3,
+        "Coups / partie (moy.)": 59.1,
+        "Coups / partie (std)": 7.1,
+        "Coups / partie (min)": 45,
+        "Coups / partie (max)": 72,
+        "Temps total agent (s)": 4.92,
+        "Temps / partie agent (ms)": 163.9
+      },
+      "conclusions": [
+        "Win rate correct (63.3%) — l'agent est meilleur que l'adversaire.",
+        "Biais premier joueur marqué (+63.3 pts) — J1 a un avantage structurel."
+      ],
+      "verdict": "correct"
+    },
+    {
+      "titre": "Qualité de l'évaluateur neuronal (30 parties, 40 états)",
+      "metriques": {
+        "Score moyen gagnant": 0.007,
+        "Score moyen perdant": -0.0655,
+        "Score moyen nul (|v|)": 0.5375,
+        "Séparation gagnant-perdant": 0.0725,
+        "Corrélation score ↔ résultat": 0.0044,
+        "MSE score ↔ résultat": 1.1231,
+        "Std des scores (dispersion)": 0.5639,
+        "Accuracy directionnelle (%)": 47.9,
+        "Erreur symétrie joueur (|v1+v2|)": 1.0726,
+        "Prob. sur coups légaux": 1.0,
+        "Accord top-1 policy/value (%)": 15.0
+      },
+      "conclusions": [
+        "Discrimination faible (séparation=0.07) — le réseau ne distingue pas bien gagnant/perdant.",
+        "Calibration faible (r=0.00) — continuer l'entraînement.",
+        "Symétrie absente (err=1.07) — le réseau ignore le joueur courant (canal 19 non utilisé).",
+        "Policy head concentrée sur les coups légaux — apprentissage réussi."
+      ],
+      "verdict": "faible"
+    },
+    {
+      "titre": "Statistiques de recherche alpha-bêta (top_k=tous)",
+      "metriques": {
+        "Positions testées": 40,
+        "Profondeurs testées": "[1, 2, 3]",
+        "Nœuds moy. (depth=3)": 47.0,
+        "Nœuds std (depth=3)": 20.0,
+        "TT hit rate (depth=3) %": 0.0,
+        "β-coupures (depth=3) %": 50.6,
+        "Temps moy. (depth=3) ms": 4.5,
+        "Facteur de branchement effectif": 6.89
+      },
+      "conclusions": [
+        "TT hit rate faible (0.0%) — peu de positions revisitées, normal en début de partie.",
+        "Taux de coupures excellent (50.6%) — le move ordering neuronal est efficace.",
+        "Facteur de branchement effectif : 6.89 (idéal < racine_b pour alpha-bêta parfait)."
+      ],
+      "verdict": "correct"
+    },
+    {
+      "titre": "Profilage des temps — AlphaBeta(d=3)",
+      "metriques": {
+        "Mesures effectuées": 40,
+        "Temps min (ms)": 1.26,
+        "Temps moy. (ms)": 5.15,
+        "Temps max (ms)": 49.89,
+        "Écart-type (ms)": 7.34,
+        "P50 (ms)": 3.66,
+        "P90 (ms)": 6.49,
+        "P95 (ms)": 6.98,
+        "P99 (ms)": 33.46,
+        "Seuil 95e percentile (ms)": 6.98,
+        "Moy. debut (ms)": 7.43,
+        "Moy. milieu (ms)": 2.87
+      },
+      "conclusions": [
+        "Temps de réponse très rapide (5.2ms moy.) — adapté au jeu en temps réel.",
+        "Temps stable (CV=1.42) — peu de variance selon la position."
+      ],
+      "verdict": "excellent"
+    }
+  ]
+}

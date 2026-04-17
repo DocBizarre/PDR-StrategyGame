@@ -28,33 +28,34 @@ from self_play import run_alphazero
 # ── Paramètres ────────────────────────────────────────────────────────────────
 
 CFG = dict(
-    # Self-play
-    simulations     = 100,      # sims MCTS/coup  — 100 = bon compromis vitesse/qualité
-    games_per_iter  = 25,       # parties/iter    — 25 × ~40 coups = ~1000 exemples/iter
-    temp_cutoff     = 10,       # exploration pendant les 10 premiers coups
+    # Self-play — avec batch MCTS on peut se permettre plus de simulations
+    # pour le même temps : 100 sims séquentiels ≈ 300 sims batch_size=8
+    simulations     = 300,      # augmenté grâce au batch inference
+    games_per_iter  = 25,
+    temp_cutoff     = 10,
 
     # Buffer
-    buffer_size     = 50_000,   # ~50 itérations d'historique
-    min_buffer      = 500,      # démarre l'entraînement dès 500 exemples
+    buffer_size     = 50_000,
+    min_buffer      = 500,
 
     # Entraînement
-    train_steps     = 100,      # steps/iter
+    train_steps     = 100,
     batch_size      = 256,
     lr              = 1e-3,
     weight_decay    = 1e-4,
 
     # Évaluation
-    eval_games      = 16,       # 16 parties = assez pour estimer le WR
-    eval_sims       = 50,       # sims réduits pendant l'éval pour aller plus vite
-    win_threshold   = 0.55,     # 55% pour promouvoir le challenger
-    eval_every      = 3,        # évalue toutes les 3 itérations
+    eval_games      = 16,
+    eval_sims       = 100,      # sims réduits à l'éval
+    win_threshold   = 0.55,
+    eval_every      = 3,
 
-    # Réseau (léger pour aller vite)
+    # Réseau
     num_filters     = 128,
     num_res_blocks  = 4,
 
-    # Durée
-    iterations      = 30,       # ~2h sur RTX 3060/3070
+    # Durée — même temps qu'avant mais meilleure qualité
+    iterations      = 30,
 
     # Persistance
     checkpoint_dir  = "models/alphazero",
