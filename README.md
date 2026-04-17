@@ -1,15 +1,37 @@
-# Ultimate Tic-Tac-Toe — IA Studio
+# Ultimate Tic-Tac-Toe
 
-Projet Python d'agents IA pour Ultimate Tic-Tac-Toe (UTTT) avec deux moteurs complémentaires : **alpha-bêta** sur réseau neuronal dual-head (value + policy) et **MCTS PUCT** style AlphaZero entraîné en self-play. Une interface Tkinter regroupe jeu, tournois et courbes d'entraînement.
+IA jouant à l'Ultimate Tic-Tac-Toe (UTTT) via un réseau neuronal dual-head (AlphaZero-style).
 
----
+## Structure
+
+```
+game.py           — Logique pure du jeu (UTTTState, coups légaux, règles)
+model.py          — Architecture ResNet (UTTTNet, 10×256) + NeuralEvaluator
+search.py         — Alpha-bêta avec iterative deepening, Zobrist, table de transposition
+bot_alphabeta.py  — Agent alpha-bêta (utilise NeuralEvaluator + search.py)
+bot_mcts.py       — Agent MCTS PUCT + réseau léger UTTTNetLight (4×128)
+bot_random.py     — Agent aléatoire (baseline)
+arena.py          — Moteur de tournoi : fait s'affronter deux agents
+replay_buffer.py  — Buffer circulaire de triplets (état, π, z) pour l'entraînement MCTS
+trainer.py        — Optimisation du réseau (loss value + loss policy) pour le MCTS
+self_play.py      — Boucle AlphaZero : self-play → entraînement → évaluation pour le MCTS
+run_training.py   — Script de lancement calibré RTX 3060/3070 (~2h)
+```
+
+## Agents disponibles
+
+| Agent | Fichier | Description |
+|---|---|---|
+| `AlphaBetaAgent` | `bot_alphabeta.py` | Alpha-bêta + policy head neuronal |
+| `MCTSAgent` | `bot_mcts.py` | MCTS PUCT guidé par réseau léger |
+| `RandomAgent` | `bot_random.py` | Baseline uniforme |
 
 ## Installation
 
 ```bash
-# Python 3.10+ recommandé
+# Python 3.10+ recommandé ( faire attention avec les compatibilités torch des python trop récents)
 pip install numpy torch matplotlib
-# Tkinter est inclus avec la plupart des distributions Python (sinon : apt install python3-tk)
+# Tkinter est surement inclus avec la votre distribution Python (sinon : apt install python3-tk)
 ```
 
 Placez les checkpoints (`.pth`) attendus dans `models/` :
@@ -23,6 +45,36 @@ models/
 ```
 
 ---
+
+## Utilisation rapide
+
+```python
+from model         import NeuralEvaluator
+from bot_alphabeta import AlphaBetaAgent
+from bot_random    import RandomAgent
+from arena         import Arena
+
+ev     = NeuralEvaluator("models/best_uttt_model.pth")
+report = Arena(AlphaBetaAgent(ev, depth=3), RandomAgent()).run_verbose(n_games=20)
+report.print_summary()
+```
+
+```bash
+# CLI
+python arena.py benchmark --games 20 --depth 3
+python arena.py battle    --games 10 --simulations 200
+python run_training.py                # entraînement AlphaZero (~2h on peut pousser sur plus)
+python run_training.py --resume       # reprend depuis models/alphazero/best.pth
+```
+
+## Entraînement AlphaZero
+
+La boucle (`self_play.py`) alterne trois phases :
+1. **Self-play** — le réseau joue contre lui-même via MCTS → remplit le `ReplayBuffer`
+2. **Entraînement** — `Trainer` optimise sur les triplets `(état, π, z)`
+3. **Évaluation** — le challenger affronte le champion ; promu si win rate ≥ 55 %
+
+
 
 ## 1. Interface graphique
 
@@ -62,7 +114,7 @@ Options communes : `--checkpoint1`, `--device {cpu,cuda}`, `--seed`, `--verbose`
 
 ## 3. Entraînement AlphaZero — self-play
 
-### Lancement rapide (préréglages RTX 3060/3070, ~30 itérations / ~2 h)
+### Lancement rapide (préréglages RTX 3070 (ma carte graphique), ~30 itérations / ~2 h)
 
 ```bash
 python run_training.py
@@ -89,7 +141,7 @@ La boucle alterne self-play → entraînement → évaluation challenger vs cham
 
 ---
 
-## 4. Rapports et statistiques
+## 4. Rapports et statistiques (cette partie était notamment pour générer les statistiques pour la soutenance et pour le déboggage)
 
 ### Rapport de présentation — `rapport.py`
 
@@ -166,56 +218,6 @@ python test_symmetry.py --checkpoint models/best_uttt_model.pth
 
 ---
 
-## Architecture du code
-
-| Fichier              | Rôle                                                                      |
-|----------------------|---------------------------------------------------------------------------|
-| `game.py`            | Logique pure UTTT (état, coups légaux, `apply_move`) — seule `numpy`      |
-| `model.py`           | `UTTTNet` 10×256 + `NeuralEvaluator` (cache, `torch.compile`, warmup)     |
-| `bot_mcts.py`        | `UTTTNetLight` 4×128, `LightEvaluator`, `MCTSEngine` (batch + virtual loss), `MCTSAgent` |
-| `bot_alphabeta.py`   | `AlphaBetaAgent` — wrapper autour de `search.best_move`                   |
-| `bot_random.py`      | `RandomAgent` — baseline                                                  |
-| `search.py`          | Alpha-bêta + Zobrist + table de transposition + iterative deepening       |
-| `arena.py`           | Moteur de tournoi + CLI (`benchmark` / `battle` / `eval`)                 |
-| `replay_buffer.py`   | Buffer FIFO pour les triplets (état, π, z) du self-play                   |
-| `trainer.py`         | Optimisation Adam + cosine schedule, pertes MSE + cross-entropy           |
-| `self_play.py`       | Boucle AlphaZero complète (self-play → train → éval champion/challenger) |
-| `run_training.py`    | Préréglages RTX 3060/3070 pour `self_play.run_alphazero`                  |
-| `ui.py`              | Interface Tkinter 4 onglets                                               |
-| `stats.py`           | Fonctions de métriques composables                                        |
-| `rapport.py` / `graphiques.py` / `model_stats.py` / `quality_checker.py` | Rapports et graphiques |
-| `test_depth.py` / `test_symmetry.py` | Diagnostics rapides                                          |
-
----
-
-## Utilisation programmatique minimale
-
-```python
-from model         import NeuralEvaluator
-from bot_alphabeta import AlphaBetaAgent
-from bot_mcts      import LightEvaluator, MCTSAgent
-from bot_random    import RandomAgent
-from arena         import Arena
-
-ev_full  = NeuralEvaluator("models/best_uttt_model.pth")
-ev_light = LightEvaluator("models/alphazero/best.pth")
-
-a = AlphaBetaAgent(ev_full, depth=4)
-b = MCTSAgent(ev_light, simulations=200)
-
-report = Arena(a, b).run_verbose(n_games=20, title="AB vs MCTS")
-report.print_summary()
-```
-
-Pour un coup isolé :
-
-```python
-from game import UTTTState
-state = UTTTState.initial()
-move, score = a.choose_move(state)
-```
-
----
 
 ## Notes pratiques
 
